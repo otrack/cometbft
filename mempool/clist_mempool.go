@@ -40,7 +40,7 @@ type CListMempool struct {
 	preCheck  PreCheckFunc
 	postCheck PostCheckFunc
 
-	txs          *clist.CList // concurrent linked-list of good txs
+	txs          *clist.CList // concurrent linked-list of good txs // FIXME good -> valid
 	proxyAppConn proxy.AppConnMempool
 
 	// Track whether we're rechecking txs.
@@ -205,7 +205,7 @@ func (mem *CListMempool) CheckTx(
 	txInfo TxInfo,
 ) error {
 	mem.updateMtx.RLock()
-	// use defer to unlock mutex because application (*local client*) might panic
+	// use defer to unlock mutex because application (*local client*) might panic // FIXME cause?
 	defer mem.updateMtx.RUnlock()
 
 	txSize := len(tx)
@@ -253,7 +253,7 @@ func (mem *CListMempool) CheckTx(
 	if err != nil {
 		return err
 	}
-	reqRes.SetCallback(mem.reqResCb(tx, txInfo.SenderID, txInfo.SenderP2PID, cb))
+	reqRes.SetCallback(mem.reqResCb(tx, txInfo.SenderID, txInfo.SenderP2PID, cb)) // FIXME race?
 
 	return nil
 }
@@ -322,11 +322,11 @@ func (mem *CListMempool) addTx(memTx *mempoolTx) {
 }
 
 // Called from:
-//   - Update (lock held) if tx was committed
+//   - Update (lock held) if tx was committed // FIXME no, RemoveTxByKey is calling this; why if tx is committed?
 //   - resCbRecheck (lock not held) if tx was invalidated
 func (mem *CListMempool) removeTx(tx types.Tx, elem *clist.CElement) {
 	mem.txs.Remove(elem)
-	elem.DetachPrev()
+	elem.DetachPrev() // FIXME why not also elm.DetachNext() ?
 	mem.txsMap.Delete(tx.Key())
 	atomic.AddInt64(&mem.txsBytes, int64(-len(tx)))
 }
@@ -335,7 +335,7 @@ func (mem *CListMempool) removeTx(tx types.Tx, elem *clist.CElement) {
 func (mem *CListMempool) RemoveTxByKey(txKey types.TxKey) error {
 	if e, ok := mem.txsMap.Load(txKey); ok {
 		memTx := e.(*clist.CElement).Value.(*mempoolTx)
-		if memTx != nil {
+		if memTx != nil { // FIXME why would it be null?
 			mem.removeTx(memTx.tx, e.(*clist.CElement))
 			return nil
 		}
@@ -344,7 +344,7 @@ func (mem *CListMempool) RemoveTxByKey(txKey types.TxKey) error {
 	return errors.New("transaction not found")
 }
 
-func (mem *CListMempool) isFull(txSize int) error {
+func (mem *CListMempool) isFull(txSize int) error { // FIXME race?
 	var (
 		memSize  = mem.Size()
 		txsBytes = mem.SizeBytes()
@@ -371,7 +371,7 @@ func (mem *CListMempool) resCbFirstTime(
 	peerID uint16,
 	peerP2PID p2p.ID,
 	res *abci.Response,
-) {
+) { // FIXME race ?
 	switch r := res.Value.(type) {
 	case *abci.Response_CheckTx:
 		var postCheckErr error
@@ -396,7 +396,7 @@ func (mem *CListMempool) resCbFirstTime(
 			memTx.senders.Store(peerID, true)
 			mem.addTx(memTx)
 			mem.logger.Debug(
-				"added good transaction",
+				"added good transaction", // FIXME valid?
 				"tx", types.Tx(tx).Hash(),
 				"res", r,
 				"height", memTx.height,
@@ -573,7 +573,7 @@ func (mem *CListMempool) ReapMaxTxs(max int) types.Txs {
 	return txs
 }
 
-// Lock() must be help by the caller during execution.
+// Lock() must be help by the caller during execution. // FIXME typo
 func (mem *CListMempool) Update(
 	height int64,
 	txs types.Txs,

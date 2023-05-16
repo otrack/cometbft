@@ -441,7 +441,7 @@ func (evpool *Pool) removeEvidenceFromList(
 		ev := e.Value.(types.Evidence)
 		if _, ok := blockEvidenceMap[evMapKey(ev)]; ok {
 			evpool.evidenceList.Remove(e)
-			e.DetachPrev()
+			e.DetachPrev() // FIXME why not also e.DetachNext() ?
 		}
 	}
 }

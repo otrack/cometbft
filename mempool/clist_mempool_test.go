@@ -207,7 +207,7 @@ func TestMempoolUpdate(t *testing.T) {
 	mp, cleanup := newMempoolWithApp(cc)
 	defer cleanup()
 
-	// 1. Adds valid txs to the cache
+	// 1. Adds valid txs to the cache // FIXME not really what this test is doing
 	{
 		tx1 := kvstore.NewTxFromID(1)
 		err := mp.Update(1, []types.Tx{tx1}, abciResponses(1, abci.CodeTypeOK), nil, nil)
@@ -217,6 +217,8 @@ func TestMempoolUpdate(t *testing.T) {
 			assert.Equal(t, ErrTxInCache, err)
 		}
 	}
+
+	// FIXME should reset mp between two tests
 
 	// 2. Removes valid txs from the mempool
 	{
