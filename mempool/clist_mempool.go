@@ -154,7 +154,7 @@ func (mem *CListMempool) FlushAppConn() error {
 	return mem.proxyAppConn.Flush(context.TODO())
 }
 
-// XXX: Unsafe! Calling Flush may leave mempool in inconsistent state.
+// XXX: Unsafe! Calling Flush may leave mempool in inconsistent state. // FIXME rather more a clear()
 func (mem *CListMempool) Flush() {
 	mem.updateMtx.RLock()
 	defer mem.updateMtx.RUnlock()
@@ -253,7 +253,7 @@ func (mem *CListMempool) CheckTx(
 	if err != nil {
 		return err
 	}
-	reqRes.SetCallback(mem.reqResCb(tx, txInfo.SenderID, txInfo.SenderP2PID, cb)) // FIXME race?
+	reqRes.SetCallback(mem.reqResCb(tx, txInfo.SenderID, txInfo.SenderP2PID, cb)) // FIXME race? No, but rather strange prog. pattern.
 
 	return nil
 }
@@ -267,7 +267,7 @@ func (mem *CListMempool) CheckTx(
 //
 // When rechecking, we don't need the peerID, so the recheck callback happens
 // here.
-func (mem *CListMempool) globalCb(req *abci.Request, res *abci.Response) {
+func (mem *CListMempool) globalCb(req *abci.Request, res *abci.Response) { // FIXME check no concurrent calls? (as required in the spec.)
 	if mem.recheckCursor == nil {
 		return
 	}
@@ -573,7 +573,8 @@ func (mem *CListMempool) ReapMaxTxs(max int) types.Txs {
 	return txs
 }
 
-// Lock() must be help by the caller during execution. // FIXME typo
+// Lock() must be help by the caller during execution. //FIXME typo;
+// FIXME is it possible to take the lock within the call? a priori now, bcause flush is needed before unlocking then why not doing all these steps within the class?
 func (mem *CListMempool) Update(
 	height int64,
 	txs types.Txs,
@@ -581,7 +582,7 @@ func (mem *CListMempool) Update(
 	preCheck PreCheckFunc,
 	postCheck PostCheckFunc,
 ) error {
-	// Set height
+	// Set height // FIXME assert this is not skipping?
 	mem.height = height
 	mem.notifiedTxsAvailable = false
 
@@ -601,7 +602,7 @@ func (mem *CListMempool) Update(
 			mem.cache.Remove(tx)
 		}
 
-		// Remove committed tx from the mempool.
+		// Remove committed tx from the mempool. // FIXME outdated comment?
 		//
 		// Note an evil proposer can drop valid txs!
 		// Mempool before:
