@@ -316,6 +316,9 @@ func (mem *CListMempool) reqResCb(
 // Called from:
 //   - resCbFirstTime (lock not held) if tx is valid
 func (mem *CListMempool) addTx(memTx *mempoolTx) {
+	if _, ok := mem.txsMap.Load(memTx.tx.Key()); ok {
+		mem.RemoveTxByKey(memTx.tx.Key())
+	}
 	e := mem.txs.PushBack(memTx)
 	mem.txsMap.Store(memTx.tx.Key(), e)
 	atomic.AddInt64(&mem.txsBytes, int64(len(memTx.tx)))
