@@ -289,6 +289,61 @@ func TestMempoolUpdateDoesNotPanicWhenApplicationMissedTx(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+func TestCacheSaturation(t *testing.T) {
+	app := kvstore.NewInMemoryApplication()
+	cc := proxy.NewLocalClientCreator(app)
+	mp, cleanup := newMempoolWithApp(cc)
+	defer cleanup()
+
+	var tx = kvstore.NewTxFromID(0)
+	mp.CheckTx(tx, nil, TxInfo{})
+
+	// saturate the cache to remove tx0
+	for i := 1; i <= mp.config.CacheSize; i++ {
+		mp.CheckTx(kvstore.NewTxFromID(i), nil, TxInfo{})
+	}
+	assert.False(t, mp.cache.Has(kvstore.NewTxFromID(0)))
+
+	// add again tx0
+	mp.CheckTx(tx, nil, TxInfo{})
+
+	// tx0 now appears twice in mp.txs
+	found := 0
+	for e := mp.txs.Front(); e != nil; e = e.Next() {
+		if types.Tx.Key(e.Value.(*mempoolTx).tx) == types.Tx.Key(tx) {
+			found++
+		}
+	}
+	assert.True(t, found == 2)
+
+	// once committed, tx0, it is no more in txsMap yet in txs
+	err := mp.Update(0, types.Txs{tx}, abciResponses(1, abci.CodeTypeOK), nil, nil)
+	require.Nil(t, err)
+
+	_, ok := mp.txsMap.Load(types.Tx.Key(tx))
+	assert.True(t, !ok)
+
+	// tx0 can be proposed then committed forever
+	found = 0
+	for _, e := range mp.ReapMaxTxs(mp.config.CacheSize + 1) {
+		if types.Tx.Key(e) == types.Tx.Key(tx) {
+			found++
+		}
+	}
+	assert.True(t, found == 1)
+
+	err = mp.Update(0, types.Txs{tx}, abciResponses(1, abci.CodeTypeOK), nil, nil)
+	require.Nil(t, err)
+
+	found = 0
+	for _, e := range mp.ReapMaxTxs(mp.config.CacheSize + 1) {
+		if types.Tx.Key(e) == types.Tx.Key(tx) {
+			found++
+		}
+	}
+	assert.True(t, found == 1)
+}
+
 func TestMempool_KeepInvalidTxsInCache(t *testing.T) {
 	app := kvstore.NewInMemoryApplication()
 	cc := proxy.NewLocalClientCreator(app)
