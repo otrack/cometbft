@@ -289,6 +289,59 @@ func TestMempoolUpdateDoesNotPanicWhenApplicationMissedTx(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
+func TestRemoveTxBadInterleavings(t *testing.T) {
+	var callback abciclient.Callback
+	mockClient := new(abciclimocks.Client)
+	mockClient.On("Start").Return(nil)
+	mockClient.On("SetLogger", mock.Anything)
+
+	mockClient.On("Error").Return(nil).Times(4)
+	mockClient.On("SetResponseCallback", mock.MatchedBy(func(cb abciclient.Callback) bool { callback = cb; return true }))
+
+	mp, cleanup, err := newMempoolWithAppMock(mockClient)
+	require.NoError(t, err)
+	defer cleanup()
+
+	// checkTx tx0 (valid)
+	var tx0 = kvstore.NewTxFromID(0)
+	reqRes := abciclient.NewReqRes(abci.ToRequestCheckTx(&abci.RequestCheckTx{Tx: tx0}))
+	reqRes.Response = abci.ToResponseCheckTx(&abci.ResponseCheckTx{Code: abci.CodeTypeOK})
+	mockClient.On("CheckTxAsync", mock.Anything, mock.Anything).Return(reqRes, nil)
+	mp.CheckTx(tx0, nil, TxInfo{})
+	reqRes.InvokeCallback()
+
+	// checkTx tx1 (valid)
+	var tx1 = kvstore.NewTxFromID(1)
+	reqRes = abciclient.NewReqRes(abci.ToRequestCheckTx(&abci.RequestCheckTx{Tx: tx1}))
+	reqRes.Response = abci.ToResponseCheckTx(&abci.ResponseCheckTx{Code: abci.CodeTypeOK})
+	mockClient.On("CheckTxAsync", mock.Anything, mock.Anything).Return(reqRes, nil)
+	mp.CheckTx(tx1, nil, TxInfo{})
+	reqRes.InvokeCallback()
+
+	// update tx0
+	// recheck tx1 is called async. (for some reason tx1 is invalid)
+	err = mp.Update(0, types.Txs{tx0}, abciResponses(1, abci.CodeTypeOK), nil, nil)
+	require.Nil(t, err)
+	resp := &abci.ResponseCheckTx{Code: 404}
+	req := &abci.RequestCheckTx{Tx: tx1}
+
+	// checkTx tx2 (valid)
+	var tx2 = kvstore.NewTxFromID(1)
+	reqRes = abciclient.NewReqRes(abci.ToRequestCheckTx(&abci.RequestCheckTx{Tx: tx2}))
+	reqRes.Response = abci.ToResponseCheckTx(&abci.ResponseCheckTx{Code: abci.CodeTypeOK})
+	mockClient.On("CheckTxAsync", mock.Anything, mock.Anything).Return(reqRes, nil)
+	mp.CheckTx(tx2, nil, TxInfo{})
+	reqRes.InvokeCallback()
+
+	// update {tx2, tx1}
+	// tx2 executing before tx1 makes it now valid
+	err = mp.Update(1, types.Txs{tx2, tx1}, abciResponses(2, abci.CodeTypeOK), nil, nil)
+	require.Nil(t, err)
+
+	// recheck tx1 now resumes -> panic
+	callback(abci.ToRequestCheckTx(req), abci.ToResponseCheckTx(resp))
+}
+
 func TestMempool_KeepInvalidTxsInCache(t *testing.T) {
 	app := kvstore.NewInMemoryApplication()
 	cc := proxy.NewLocalClientCreator(app)
