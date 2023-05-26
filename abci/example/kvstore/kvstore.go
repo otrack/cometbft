@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	types2 "github.com/cometbft/cometbft/types"
 	"strconv"
 	"strings"
 
@@ -41,6 +42,7 @@ type Application struct {
 	RetainBlocks int64 // blocks to retain after commit (via ResponseCommit.RetainHeight)
 	stagedTxs    [][]byte
 	logger       log.Logger
+	committedTxs map[types2.TxKey]bool
 
 	// validator set
 	valUpdates         []types.ValidatorUpdate
@@ -57,6 +59,7 @@ func NewApplication(db dbm.DB) *Application {
 		logger:             log.NewNopLogger(),
 		state:              loadState(db),
 		valAddrToPubKeyMap: make(map[string]cryptoproto.PublicKey),
+		committedTxs:       make(map[types2.TxKey]bool),
 	}
 }
 
@@ -133,7 +136,7 @@ func (app *Application) CheckTx(_ context.Context, req *types.RequestCheckTx) (*
 		if _, _, err := parseValidatorTx(req.Tx); err != nil {
 			return &types.ResponseCheckTx{Code: CodeTypeInvalidTxFormat}, nil
 		}
-	} else if !isValidTx(req.Tx) {
+	} else if !app.isValidTx(req.Tx) {
 		return &types.ResponseCheckTx{Code: CodeTypeInvalidTxFormat}, nil
 	}
 
@@ -143,14 +146,14 @@ func (app *Application) CheckTx(_ context.Context, req *types.RequestCheckTx) (*
 // Tx must have a format like key:value or key=value. That is:
 // - it must have one and only one ":" or "="
 // - It must not begin or end with these special characters
-func isValidTx(tx []byte) bool {
+func (app *Application) isValidTx(tx []byte) bool {
 	if bytes.Count(tx, []byte(":")) == 1 && bytes.Count(tx, []byte("=")) == 0 {
 		if !bytes.HasPrefix(tx, []byte(":")) && !bytes.HasSuffix(tx, []byte(":")) {
 			return true
 		}
 	} else if bytes.Count(tx, []byte("=")) == 1 && bytes.Count(tx, []byte(":")) == 0 {
 		if !bytes.HasPrefix(tx, []byte("=")) && !bytes.HasSuffix(tx, []byte("=")) {
-			return true
+			return !app.committedTxs[types2.Tx(tx).Key()]
 		}
 	}
 	return false
@@ -260,6 +263,10 @@ func (app *Application) FinalizeBlock(_ context.Context, req *types.RequestFinal
 		app.state.Size++
 	}
 
+	for _, tx := range types2.ToTxs(req.Txs) {
+		app.committedTxs[tx.Key()] = true
+	}
+
 	app.state.Height = req.Height
 
 	response := &types.ResponseFinalizeBlock{TxResults: respTxs, ValidatorUpdates: app.valUpdates, AppHash: app.state.Hash()}
@@ -318,6 +325,7 @@ func (app *Application) FinalizeBlock(_ context.Context, req *types.RequestFinal
 			},
 		}
 	}
+
 	return response, nil
 }
 

@@ -54,7 +54,7 @@ func (memR *Reactor) OnStart() error {
 	return nil
 }
 
-// GetChannels implements Reactor by returning the list of channels for this
+// GetChannels implements Reactor by returningg the list of channels for this
 // reactor.
 func (memR *Reactor) GetChannels() []*p2p.ChannelDescriptor {
 	largestTx := make([]byte, memR.config.MaxTxBytes)

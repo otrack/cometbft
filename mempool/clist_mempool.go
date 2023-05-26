@@ -4,9 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"sync"
-	"sync/atomic"
-
 	abci "github.com/cometbft/cometbft/abci/types"
 	"github.com/cometbft/cometbft/config"
 	"github.com/cometbft/cometbft/libs/clist"
@@ -16,6 +13,8 @@ import (
 	"github.com/cometbft/cometbft/p2p"
 	"github.com/cometbft/cometbft/proxy"
 	"github.com/cometbft/cometbft/types"
+	"sync"
+	"sync/atomic"
 )
 
 // CListMempool is an ordered in-memory pool for transactions before they are
@@ -435,6 +434,12 @@ func (mem *CListMempool) resCbRecheck(req *abci.Request, res *abci.Response) {
 	case *abci.Response_CheckTx:
 		tx := req.GetCheckTx().Tx
 		memTx := mem.recheckCursor.Value.(*mempoolTx)
+
+		mem.logger.Info(
+			"rechecking",
+			types.Tx(tx),
+			r.CheckTx.Code,
+		)
 
 		// Search through the remaining list of tx to recheck for a transaction that matches
 		// the one we received from the ABCI application.

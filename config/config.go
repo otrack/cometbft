@@ -745,7 +745,7 @@ func DefaultMempoolConfig() *MempoolConfig {
 // TestMempoolConfig returns a configuration for testing the CometBFT mempool
 func TestMempoolConfig() *MempoolConfig {
 	cfg := DefaultMempoolConfig()
-	cfg.CacheSize = 1000
+	cfg.CacheSize = 1
 	return cfg
 }
 

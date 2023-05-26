@@ -20,6 +20,7 @@ import (
 	"github.com/cometbft/cometbft/abci/example/kvstore"
 	abciserver "github.com/cometbft/cometbft/abci/server"
 	abci "github.com/cometbft/cometbft/abci/types"
+	types2 "github.com/cometbft/cometbft/abci/types"
 	"github.com/cometbft/cometbft/config"
 	"github.com/cometbft/cometbft/internal/test"
 	"github.com/cometbft/cometbft/libs/log"
@@ -289,59 +290,144 @@ func TestMempoolUpdateDoesNotPanicWhenApplicationMissedTx(t *testing.T) {
 	mockClient.AssertExpectations(t)
 }
 
-func TestCacheSaturation(t *testing.T) {
+func TestCacheSaturationPanicUponCommit(t *testing.T) {
+	sockPath := fmt.Sprintf("unix:///tmp/echo_%v.sock", cmtrand.Str(6))
 	app := kvstore.NewInMemoryApplication()
-	cc := proxy.NewLocalClientCreator(app)
-	mp, cleanup := newMempoolWithApp(cc)
+	_, server := newRemoteApp(t, sockPath, app)
+	t.Cleanup(func() {
+		if err := server.Stop(); err != nil {
+			t.Error(err)
+		}
+	})
+	cfg := test.ResetTestRoot("mempool_test")
+	mp, cleanup := newMempoolWithAppAndConfig(proxy.NewRemoteClientCreator(sockPath, "socket", true), cfg)
 	defer cleanup()
 
-	var tx = kvstore.NewTxFromID(0)
-	mp.CheckTx(tx, nil, TxInfo{})
+	// add tx0
+	var tx0 = kvstore.NewTxFromID(0)
+	mp.CheckTx(tx0, nil, TxInfo{})
+	mp.FlushAppConn()
 
 	// saturate the cache to remove tx0
-	for i := 1; i <= mp.config.CacheSize; i++ {
-		mp.CheckTx(kvstore.NewTxFromID(i), nil, TxInfo{})
+	txs := make([]types.Tx, mp.config.CacheSize)
+	for i := 0; i < mp.config.CacheSize; i++ {
+		tx := kvstore.NewTxFromID(i + 1)
+		txs[i] = tx
+		mp.CheckTx(tx, nil, TxInfo{})
+		mp.FlushAppConn()
 	}
-	assert.False(t, mp.cache.Has(kvstore.NewTxFromID(0)))
+	assert.False(t, mp.cache.Has(tx0))
 
 	// add again tx0
-	mp.CheckTx(tx, nil, TxInfo{})
+	mp.CheckTx(kvstore.NewTxFromID(0), nil, TxInfo{})
+	mp.FlushAppConn()
 
 	// tx0 now appears twice in mp.txs
 	found := 0
 	for e := mp.txs.Front(); e != nil; e = e.Next() {
-		if types.Tx.Key(e.Value.(*mempoolTx).tx) == types.Tx.Key(tx) {
+		if types.Tx.Key(e.Value.(*mempoolTx).tx) == types.Tx.Key(tx0) {
 			found++
 		}
 	}
 	assert.True(t, found == 2)
 
-	// once committed, tx0, it is no more in txsMap yet in txs
-	err := mp.Update(0, types.Txs{tx}, abciResponses(1, abci.CodeTypeOK), nil, nil)
-	require.Nil(t, err)
+	// commit all the transactions in the mempool
+	txs = mp.ReapMaxTxs(mp.Size())
+	doCommit(mp, app, txs, 0)
+}
 
-	_, ok := mp.txsMap.Load(types.Tx.Key(tx))
+func TestCacheSaturation(t *testing.T) {
+	sockPath := fmt.Sprintf("unix:///tmp/echo_%v.sock", cmtrand.Str(6))
+	app := kvstore.NewInMemoryApplication()
+	_, server := newRemoteApp(t, sockPath, app)
+	t.Cleanup(func() {
+		if err := server.Stop(); err != nil {
+			t.Error(err)
+		}
+	})
+	cfg := test.ResetTestRoot("mempool_test")
+	mp, cleanup := newMempoolWithAppAndConfig(proxy.NewRemoteClientCreator(sockPath, "socket", true), cfg)
+	defer cleanup()
+
+	// add tx0
+	var tx0 = kvstore.NewTxFromID(0)
+	mp.CheckTx(tx0, nil, TxInfo{})
+	mp.FlushAppConn()
+
+	// saturate the cache to remove tx0
+	txs := make([]types.Tx, mp.config.CacheSize)
+	for i := 0; i < mp.config.CacheSize; i++ {
+		tx := kvstore.NewTxFromID(i + 1)
+		txs[i] = tx
+		mp.CheckTx(tx, nil, TxInfo{})
+		mp.FlushAppConn()
+	}
+	assert.False(t, mp.cache.Has(tx0))
+
+	// add again tx0
+	mp.CheckTx(kvstore.NewTxFromID(0), nil, TxInfo{})
+	mp.FlushAppConn()
+
+	// tx0 now appears twice in mp.txs
+	found := 0
+	for e := mp.txs.Front(); e != nil; e = e.Next() {
+		if types.Tx.Key(e.Value.(*mempoolTx).tx) == types.Tx.Key(tx0) {
+			found++
+		}
+	}
+	assert.True(t, found == 2)
+
+	// once tx0 is committed, the transaction is no more in txsMap, yet it is in txs
+	doCommit(mp, app, append(txs, tx0), 0)
+	_, ok := mp.txsMap.Load(types.Tx.Key(tx0))
 	assert.True(t, !ok)
-
-	// tx0 can be proposed then committed forever
 	found = 0
 	for _, e := range mp.ReapMaxTxs(mp.config.CacheSize + 1) {
-		if types.Tx.Key(e) == types.Tx.Key(tx) {
+		if types.Tx.Key(e) == types.Tx.Key(tx0) {
 			found++
 		}
 	}
 	assert.True(t, found == 1)
 
-	err = mp.Update(0, types.Txs{tx}, abciResponses(1, abci.CodeTypeOK), nil, nil)
-	require.Nil(t, err)
+	// commit it once again
+	doCommit(mp, app, types.Txs{tx0}, 1)
+}
 
-	found = 0
-	for _, e := range mp.ReapMaxTxs(mp.config.CacheSize + 1) {
-		if types.Tx.Key(e) == types.Tx.Key(tx) {
-			found++
+func TestRemoveTxBadInterleavings(t *testing.T) {
+	sockPath := fmt.Sprintf("unix:///tmp/echo_%v.sock", cmtrand.Str(6))
+	app := kvstore.NewInMemoryApplication()
+	_, server := newRemoteApp(t, sockPath, app)
+	t.Cleanup(func() {
+		if err := server.Stop(); err != nil {
+			t.Error(err)
 		}
-	}
-	assert.True(t, found == 1)
+	})
+	cfg := test.ResetTestRoot("mempool_test")
+	mp, cleanup := newMempoolWithAppAndConfig(proxy.NewRemoteClientCreator(sockPath, "socket", true), cfg)
+	defer cleanup()
+
+	// checkTx tx0 (valid)
+	var tx0 = kvstore.NewTxFromID(0)
+	mp.CheckTx(tx0, nil, TxInfo{})
+
+	// checkTx tx1 (valid)
+	var tx1 = kvstore.NewTxFromID(1)
+	mp.CheckTx(tx1, nil, TxInfo{})
+
+	// update tx0
+	// recheck tx1 is called async. (for some reason tx1 is invalid)
+	doCommit(mp, app, types.Txs{tx0}, 0)
+
+	// checkTx tx2 (valid)
+	var tx2 = kvstore.NewTxFromID(1)
+	mp.CheckTx(tx2, nil, TxInfo{})
+
+	// update {tx2, tx1}
+	// tx2 executing before tx1 makes it now valid
+	doCommit(mp, app, types.Txs{tx2, tx1}, 1)
+
+	// recheck tx1 now resumes -> panic
+
 }
 
 func TestMempool_KeepInvalidTxsInCache(t *testing.T) {
@@ -750,4 +836,17 @@ func abciResponses(n int, code uint32) []*abci.ExecTxResult {
 		responses = append(responses, &abci.ExecTxResult{Code: code})
 	}
 	return responses
+}
+
+func doCommit(mp Mempool, app abci.Application, txs types.Txs, height int64) {
+	rfb := &types2.RequestFinalizeBlock{Txs: make([][]byte, len(txs))}
+	for i, tx := range txs {
+		rfb.Txs[i] = tx
+	}
+	app.FinalizeBlock(context.Background(), rfb)
+	mp.Lock()
+	mp.FlushAppConn()
+	app.Commit(context.Background(), &abci.RequestCommit{})
+	mp.Update(height, txs, abciResponses(txs.Len(), abci.CodeTypeOK), nil, nil)
+	mp.Unlock()
 }

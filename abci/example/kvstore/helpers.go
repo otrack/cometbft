@@ -67,6 +67,10 @@ func NewTxFromID(i int) []byte {
 	return []byte(fmt.Sprintf("%d=%d", i, i))
 }
 
+func NewInvalidTxFromID(i int) []byte {
+	return []byte(fmt.Sprintf("invalid#%d", i))
+}
+
 // Create a transaction to add/remove/update a validator
 // To remove, set power to 0.
 func MakeValSetChangeTx(pubkey crypto.PublicKey, power int64) []byte {
