@@ -336,6 +336,27 @@ func TestCacheSaturationPanicUponCommit(t *testing.T) {
 	doCommit(mp, app, txs, 0)
 }
 
+func TestFlushIsSync(t *testing.T) {
+	sockPath := fmt.Sprintf("unix:///tmp/echo_%v.sock", cmtrand.Str(6))
+	app := kvstore.NewInMemoryApplication()
+	_, server := newRemoteApp(t, sockPath, app)
+	t.Cleanup(func() {
+		if err := server.Stop(); err != nil {
+			t.Error(err)
+		}
+	})
+	cfg := test.ResetTestRoot("mempool_test")
+	mp, cleanup := newMempoolWithAppAndConfig(proxy.NewRemoteClientCreator(sockPath, "socket", true), cfg)
+	defer cleanup()
+
+	for i := 1; i <= mp.config.Size; i++ {
+		var tx = kvstore.NewTxFromID(i)
+		mp.CheckTx(tx, nil, TxInfo{})
+		mp.FlushAppConn()
+		require.True(t, mp.Size() == i)
+	}
+}
+
 func TestCacheSaturation(t *testing.T) {
 	sockPath := fmt.Sprintf("unix:///tmp/echo_%v.sock", cmtrand.Str(6))
 	app := kvstore.NewInMemoryApplication()
@@ -849,4 +870,42 @@ func doCommit(mp Mempool, app abci.Application, txs types.Txs, height int64) {
 	app.Commit(context.Background(), &abci.RequestCommit{})
 	mp.Update(height, txs, abciResponses(txs.Len(), abci.CodeTypeOK), nil, nil)
 	mp.Unlock()
+}
+
+func TestPerformance(t *testing.T) {
+	sockPath := fmt.Sprintf("unix:///tmp/echo_%v.sock", cmtrand.Str(6))
+	app := kvstore.NewInMemoryApplication()
+	_, server := newRemoteApp(t, sockPath, app)
+	t.Cleanup(func() {
+		if err := server.Stop(); err != nil {
+			t.Error(err)
+		}
+	})
+	cfg := test.ResetTestRoot("mempool_test")
+	mp, cleanup := newMempoolWithAppAndConfig(proxy.NewRemoteClientCreator(sockPath, "socket", true), cfg)
+	defer cleanup()
+
+	mp.logger = log.NewNopLogger()
+
+	// parameters
+	duration := time.Duration(10 * time.Second)
+	now := time.Now()
+	end := now.Add(duration)
+	count := int64(0)
+	i := 0
+
+	for now.Before(end) {
+		i++
+		tx := kvstore.NewTxFromID(i)
+		mp.CheckTx(tx, nil, TxInfo{})
+		mp.FlushAppConn()
+		require.True(t, mp.Size() == 1)
+		var txs = mp.ReapMaxTxs(mp.Size())
+		doCommit(mp, app, txs, count)
+		count += int64(txs.Len())
+		now = time.Now()
+	}
+
+	fmt.Print("(avg) latency: ", int(float64(duration.Nanoseconds())/float64(count)), "ns\n")
+
 }
