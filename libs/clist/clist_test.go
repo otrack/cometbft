@@ -312,3 +312,12 @@ FOR_LOOP2:
 		t.Fatalf("number of pushed items (%d) not equal to number of seen items (%d)", pushed, seen)
 	}
 }
+func TestRemoveTwicePanic(t *testing.T) {
+	l := New()
+	l.PushBack(1)
+	el1 := l.PushBack(2)
+	l.PushBack(3)
+	l.Remove(el1)
+	el1.DetachPrev()
+	l.Remove(el1)
+}

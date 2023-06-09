@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"golang.org/x/exp/rand"
 	mrand "math/rand"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -715,4 +717,89 @@ func abciResponses(n int, code uint32) []*abci.ExecTxResult {
 		responses = append(responses, &abci.ExecTxResult{Code: code})
 	}
 	return responses
+}
+
+func TestRemoveTxBadInterleavings(t *testing.T) {
+	maxTries := 1000
+	var callback abciclient.Callback
+	mockClient := new(abciclimocks.Client)
+	mockClient.On("Start").Return(nil)
+	mockClient.On("SetLogger", mock.Anything)
+
+	mockClient.On("Error").Return(nil)
+	mockClient.On("SetResponseCallback", mock.MatchedBy(func(cb abciclient.Callback) bool { callback = cb; return true }))
+
+	mp, cleanup, err := newMempoolWithAppMock(mockClient)
+	require.NoError(t, err)
+	defer cleanup()
+
+	mp.SetLogger(log.NewNopLogger())
+
+	var wg sync.WaitGroup
+	rand.Seed(uint64(time.Now().Nanosecond()))
+
+	for i := 0; i < maxTries; i++ {
+
+		wg.Add(1)
+
+		var tx0 = kvstore.NewTxFromID(0)
+		var tx1 = kvstore.NewTxFromID(1)
+		var tx2 = kvstore.NewTxFromID(2)
+
+		done := make(chan struct{})
+
+		// checkTx tx0 (valid)
+		reqResTx0 := abciclient.NewReqRes(abci.ToRequestCheckTx(&abci.RequestCheckTx{Tx: tx0, Type: abci.CheckTxType_New}))
+		reqResTx0.Response = abci.ToResponseCheckTx(&abci.ResponseCheckTx{Code: abci.CodeTypeOK})
+		mockClient.On("CheckTxAsync", mock.Anything, mock.Anything).Return(reqResTx0, nil).Once()
+		err = mp.CheckTx(tx0, nil, TxInfo{})
+		require.Nil(t, err)
+		reqResTx0.InvokeCallback()
+
+		// checkTx tx1 (valid)
+		reqResTx11 := abciclient.NewReqRes(abci.ToRequestCheckTx(&abci.RequestCheckTx{Tx: tx1, Type: abci.CheckTxType_New}))
+		reqResTx11.Response = abci.ToResponseCheckTx(&abci.ResponseCheckTx{Code: abci.CodeTypeOK})
+		mockClient.On("CheckTxAsync", mock.Anything, mock.Anything).Return(reqResTx11, nil).Once()
+		err = mp.CheckTx(tx1, func(tx *abci.ResponseCheckTx) { close(done) }, TxInfo{})
+		require.Nil(t, err)
+		reqResTx11.InvokeCallback()
+		<-done
+		require.True(t, mp.txs.Len() == 2)
+
+		// update tx0
+		// recheck tx1 is called async. (for some reason tx1 is invalid)
+		mockClient.On("CheckTxAsync", mock.Anything, mock.Anything).Return(reqResTx11, nil).Once()
+		mp.Lock()
+		err = mp.Update(0, types.Txs{tx0}, abciResponses(1, abci.CodeTypeOK), nil, nil)
+		mp.Unlock()
+		require.Nil(t, err)
+		require.True(t, mp.txs.Len() == 1 && !mp.noRecheckingRequests())
+		resp := &abci.ResponseCheckTx{Code: 404}
+		req := &abci.RequestCheckTx{Tx: tx1}
+		req.Type = abci.CheckTxType_Recheck
+		go func() {
+			callback(abci.ToRequestCheckTx(req), abci.ToResponseCheckTx(resp))
+			wg.Done()
+		}()
+
+		n := rand.Intn(10000)
+		time.Sleep(time.Duration(n) * time.Nanosecond)
+
+		// update {tx2, tx1}
+		// tx2 executing before tx1 makes it now valid
+		// both calls to remove tx1 occur concurrently, leading to a panic on the CList object txs.
+		reqResTx12 := abciclient.NewReqRes(abci.ToRequestCheckTx(&abci.RequestCheckTx{Tx: tx1, Type: abci.CheckTxType_New}))
+		reqResTx12.Response = abci.ToResponseCheckTx(&abci.ResponseCheckTx{Code: abci.CodeTypeOK})
+		mockClient.On("CheckTxAsync", mock.Anything, mock.Anything).Return(reqResTx12, nil).Once()
+		mp.Lock()
+		err = mp.Update(1, types.Txs{tx2, tx1}, abciResponses(2, abci.CodeTypeOK), nil, nil)
+		mp.Unlock()
+		require.Nil(t, err)
+		reqResTx12.InvokeCallback()
+
+		wg.Wait()
+		mp.Flush()
+
+	}
+
 }
